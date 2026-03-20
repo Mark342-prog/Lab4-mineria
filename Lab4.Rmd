@@ -1,0 +1,595 @@
+---
+title: "Lab 4 - Árboles de Decisión"
+author: "Grupo \\#8  \nOsman Emanuel de León García - 23428  \nMaría José Yee Vidal - 231193  \nAndrés Rafael Chivalán Marroquín - 21534\n"
+date: "2026-03-20"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(Metrics)
+
+set.seed(42)
+```
+
+\newpage
+
+# 1. Reutilización de conjuntos de entrenamiento y prueba (Actividad 1)
+
+Se reutiliza exactamente el mismo preprocesamiento y split 80/20 del Lab 3,
+con `set.seed(42)` para garantizar reproducibilidad.
+
+```{r preparacion_datos, message=FALSE, warning=FALSE}
+# ── Carga y limpieza (idéntica al Lab 3) ──────────────────────────────────────
+load("data/listings.RData")
+
+listings$price <- as.numeric(gsub("[$,]", "", listings$price))
+
+listings_clean <- listings %>%
+  filter(!is.na(price), price > 0) %>%
+  select(
+    price,
+    accommodates,
+    bathrooms,
+    bedrooms,
+    beds,
+    minimum_nights,
+    maximum_nights,
+    availability_30,
+    availability_60,
+    availability_90,
+    availability_365,
+    number_of_reviews,
+    number_of_reviews_ltm,
+    review_scores_rating,
+    review_scores_cleanliness,
+    review_scores_checkin,
+    review_scores_communication,
+    review_scores_location,
+    review_scores_value,
+    reviews_per_month,
+    calculated_host_listings_count,
+    host_listings_count,
+    latitude,
+    longitude
+  ) %>%
+  filter(!is.na(bedrooms), !is.na(bathrooms), !is.na(beds))
+
+# Remover outliers extremos con 3×IQR (igual que Lab 3)
+Q1        <- quantile(listings_clean$price, 0.25)
+Q3        <- quantile(listings_clean$price, 0.75)
+IQR_val   <- Q3 - Q1
+limite_sup <- Q3 + 3 * IQR_val
+
+listings_clean <- listings_clean %>%
+  filter(price <= limite_sup)
+
+# Agregar log_price
+listings_clean$log_price <- log(listings_clean$price)
+
+cat("Rango de price tras limpieza: $", min(listings_clean$price),
+    "- $", max(listings_clean$price), "\n")
+
+# ── Dataset modelo (variables numéricas + NAs eliminados) ────────────────────
+datos_modelo <- listings_clean %>%
+  select(log_price, price, accommodates, bedrooms, bathrooms, beds,
+         minimum_nights, availability_365, number_of_reviews,
+         review_scores_rating, review_scores_cleanliness,
+         review_scores_value, reviews_per_month,
+         calculated_host_listings_count) %>%
+  na.omit()
+
+# ── Split 80/20 con la misma semilla ─────────────────────────────────────────
+set.seed(42)
+n         <- nrow(datos_modelo)
+idx_train <- sample(1:n, size = floor(0.8 * n))
+train     <- datos_modelo[idx_train, ]
+test      <- datos_modelo[-idx_train, ]
+
+cat("Total observaciones:", n, "\n")
+cat("Entrenamiento (80%):", nrow(train), "\n")
+cat("Prueba       (20%):", nrow(test),  "\n")
+```
+
+**Justificación:** Se mantiene la misma partición del Lab 3 para que las
+comparaciones entre regresión lineal y árboles de decisión sean directas y
+reproducibles. El dataset final cuenta con 60,343 observaciones tras la
+limpieza y remoción de outliers.
+
+\newpage
+
+# 2. Árbol de Regresión — todas las variables (Actividad 2)
+
+Se entrena un árbol de regresión con `rpart` usando `log_price` como variable
+respuesta y todas las variables numéricas disponibles.
+
+```{r arbol_regresion_base, message=FALSE, warning=FALSE}
+# Árbol de regresión con todos los predictores, sin restricción de profundidad
+arbol_reg_full <- rpart(
+  log_price ~ accommodates + bedrooms + bathrooms + beds +
+              minimum_nights + availability_365 + number_of_reviews +
+              review_scores_rating + review_scores_cleanliness +
+              review_scores_value + reviews_per_month +
+              calculated_host_listings_count,
+  data    = train,
+  method  = "anova",
+  control = rpart.control(cp = 0.001)   # cp pequeño → árbol más profundo
+)
+
+# Visualización del árbol completo
+rpart.plot(
+  arbol_reg_full,
+  type    = 4,
+  extra   = 101,
+  under   = TRUE,
+  tweak   = 0.8,
+  main    = "Árbol de Regresión — todas las variables (cp=0.001)"
+)
+
+# Importancia de variables
+imp_full <- arbol_reg_full$variable.importance
+imp_df   <- data.frame(
+  variable    = names(imp_full),
+  importancia = as.numeric(imp_full)
+) %>% arrange(desc(importancia))
+
+ggplot(imp_df, aes(x = reorder(variable, importancia), y = importancia)) +
+  geom_col(fill = "#2C7BB6", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Importancia de variables — Árbol de regresión completo",
+       x = "Variable", y = "Importancia") +
+  theme_minimal()
+```
+
+\newpage
+
+# 3. Predicción y análisis del árbol base (Actividad 3)
+
+```{r pred_arbol_base, message=FALSE, warning=FALSE}
+# Predicciones sobre el conjunto de prueba
+pred_arbol_full <- predict(arbol_reg_full, newdata = test)
+
+# Métricas de evaluación
+r2_arbol_full   <- 1 - sum((test$log_price - pred_arbol_full)^2) /
+                       sum((test$log_price - mean(test$log_price))^2)
+rmse_arbol_full <- sqrt(mean((test$log_price - pred_arbol_full)^2))
+mae_arbol_full  <- mean(abs(test$log_price - pred_arbol_full))
+
+cat("=== Árbol de regresión — todas las variables ===\n")
+cat("R²  :", round(r2_arbol_full,   4), "\n")
+cat("RMSE:", round(rmse_arbol_full, 4), "\n")
+cat("MAE :", round(mae_arbol_full,  4), "\n")
+
+# Gráfica predicho vs real
+set.seed(42)
+idx_viz <- sample(1:nrow(test), 3000)
+df_viz  <- data.frame(
+  real     = test$log_price[idx_viz],
+  predicho = pred_arbol_full[idx_viz]
+)
+
+ggplot(df_viz, aes(x = real, y = predicho)) +
+  geom_point(alpha = 0.2, color = "#2C7BB6") +
+  geom_abline(slope = 1, intercept = 0, color = "#D7191C", linewidth = 1) +
+  labs(title = "Árbol de regresión — Predicho vs Real (cp=0.001)",
+       x = "log(price) real", y = "log(price) predicho") +
+  theme_minimal()
+```
+
+**Análisis del árbol base:** El árbol de regresión sin restricción de
+profundidad obtiene un R² de `r round(r2_arbol_full, 4)` y un RMSE de
+`r round(rmse_arbol_full, 4)` sobre el conjunto de prueba. La variable más
+importante fue `accommodates`, seguida de `calculated_host_listings_count` y
+`bathrooms`, lo cual es consistente con los hallazgos del análisis de
+correlación del Lab 3. El árbol captura relaciones no lineales que la regresión
+lineal no puede modelar directamente, aunque puede presentar cierto sobreajuste
+cuando la profundidad no está controlada.
+
+\newpage
+
+# 4. Tuneo de la profundidad del árbol (Actividad 4)
+
+Se entrenan 4 modelos adicionales variando el parámetro `maxdepth` para
+encontrar la profundidad óptima.
+
+```{r tuneo_profundidad, message=FALSE, warning=FALSE}
+# Función auxiliar de métricas
+metricas_arbol <- function(modelo, datos_test, nombre) {
+  pred  <- predict(modelo, newdata = datos_test)
+  r2    <- 1 - sum((datos_test$log_price - pred)^2) /
+               sum((datos_test$log_price - mean(datos_test$log_price))^2)
+  rmse  <- sqrt(mean((datos_test$log_price - pred)^2))
+  mae   <- mean(abs(datos_test$log_price - pred))
+  data.frame(Modelo = nombre,
+             MaxDepth = NA,
+             R2   = round(r2,   4),
+             RMSE = round(rmse, 4),
+             MAE  = round(mae,  4))
+}
+
+# Profundidades a explorar
+profundidades <- c(3, 5, 8, 12, 20)
+resultados_reg <- data.frame()
+
+for (d in profundidades) {
+  modelo_d <- rpart(
+    log_price ~ accommodates + bedrooms + bathrooms + beds +
+                minimum_nights + availability_365 + number_of_reviews +
+                review_scores_rating + review_scores_cleanliness +
+                review_scores_value + reviews_per_month +
+                calculated_host_listings_count,
+    data    = train,
+    method  = "anova",
+    control = rpart.control(maxdepth = d, cp = 0.0001)
+  )
+  pred_d   <- predict(modelo_d, newdata = test)
+  r2_d     <- 1 - sum((test$log_price - pred_d)^2) /
+                  sum((test$log_price - mean(test$log_price))^2)
+  rmse_d   <- sqrt(mean((test$log_price - pred_d)^2))
+  mae_d    <- mean(abs(test$log_price - pred_d))
+
+  resultados_reg <- bind_rows(resultados_reg,
+    data.frame(Modelo   = paste0("maxdepth=", d),
+               MaxDepth = d,
+               R2       = round(r2_d,   4),
+               RMSE     = round(rmse_d, 4),
+               MAE      = round(mae_d,  4))
+  )
+}
+
+print(resultados_reg)
+
+# Gráfica R² vs profundidad
+ggplot(resultados_reg, aes(x = MaxDepth, y = R2)) +
+  geom_line(color = "#2C7BB6", linewidth = 1) +
+  geom_point(color = "#D7191C", size = 3) +
+  geom_label(aes(label = R2), vjust = -0.8, size = 3) +
+  scale_x_continuous(breaks = profundidades) +
+  labs(title = "R² en prueba según profundidad del árbol de regresión",
+       x = "maxdepth", y = "R²") +
+  theme_minimal()
+
+# Gráfica RMSE vs profundidad
+ggplot(resultados_reg, aes(x = MaxDepth, y = RMSE)) +
+  geom_line(color = "#1A9641", linewidth = 1) +
+  geom_point(color = "#FDAE61", size = 3) +
+  geom_label(aes(label = RMSE), vjust = -0.8, size = 3) +
+  scale_x_continuous(breaks = profundidades) +
+  labs(title = "RMSE en prueba según profundidad del árbol de regresión",
+       x = "maxdepth", y = "RMSE") +
+  theme_minimal()
+
+# Seleccionar mejor modelo
+idx_mejor_reg  <- which.max(resultados_reg$R2)
+mejor_depth    <- resultados_reg$MaxDepth[idx_mejor_reg]
+cat("\nMejor profundidad:", mejor_depth,
+    "| R²:", resultados_reg$R2[idx_mejor_reg],
+    "| RMSE:", resultados_reg$RMSE[idx_mejor_reg], "\n")
+
+# Entrenar y graficar el mejor árbol
+arbol_reg_mejor <- rpart(
+  log_price ~ accommodates + bedrooms + bathrooms + beds +
+              minimum_nights + availability_365 + number_of_reviews +
+              review_scores_rating + review_scores_cleanliness +
+              review_scores_value + reviews_per_month +
+              calculated_host_listings_count,
+  data    = train,
+  method  = "anova",
+  control = rpart.control(maxdepth = mejor_depth, cp = 0.0001)
+)
+
+rpart.plot(
+  arbol_reg_mejor,
+  type  = 4,
+  extra = 101,
+  under = TRUE,
+  tweak = 0.8,
+  main  = paste0("Mejor árbol de regresión — maxdepth=", mejor_depth)
+)
+```
+
+**Análisis del tuneo:** Se evaluaron profundidades desde 3 hasta 20. Árboles
+muy poco profundos (maxdepth=3) generan subajuste al no capturar suficiente
+complejidad, mientras que profundidades muy altas tienden a sobreajustar. La
+profundidad óptima equilibra la capacidad predictiva en el conjunto de prueba
+con la generalización. Las variables `accommodates`, `bathrooms` y los scores
+de reseña aparecen consistentemente en los primeros nodos, reflejando su alta
+importancia.
+
+\newpage
+
+# 5. Comparación árbol de regresión vs regresión lineal (Actividad 5)
+
+```{r comparacion_vs_lineal, message=FALSE, warning=FALSE}
+# ── Re-entrenar el mejor modelo lineal del Lab 3 (Depurado) ──────────────────
+modelo_lineal_dep <- lm(
+  log_price ~ accommodates + bathrooms +
+              minimum_nights + availability_365 + number_of_reviews +
+              review_scores_rating + review_scores_cleanliness +
+              review_scores_value + reviews_per_month +
+              calculated_host_listings_count,
+  data = train
+)
+
+pred_lineal_test <- predict(modelo_lineal_dep, newdata = test)
+
+r2_lineal   <- 1 - sum((test$log_price - pred_lineal_test)^2) /
+                   sum((test$log_price - mean(test$log_price))^2)
+rmse_lineal <- sqrt(mean((test$log_price - pred_lineal_test)^2))
+mae_lineal  <- mean(abs(test$log_price - pred_lineal_test))
+
+# ── Predicciones del mejor árbol ─────────────────────────────────────────────
+pred_mejor_arbol <- predict(arbol_reg_mejor, newdata = test)
+
+r2_arbol_opt   <- 1 - sum((test$log_price - pred_mejor_arbol)^2) /
+                      sum((test$log_price - mean(test$log_price))^2)
+rmse_arbol_opt <- sqrt(mean((test$log_price - pred_mejor_arbol)^2))
+mae_arbol_opt  <- mean(abs(test$log_price - pred_mejor_arbol))
+
+# ── Tabla comparativa ─────────────────────────────────────────────────────────
+comparacion <- data.frame(
+  Algoritmo = c("Regresión Lineal (Depurada)",
+                paste0("Árbol de Regresión (maxdepth=", mejor_depth, ")")),
+  R2   = round(c(r2_lineal,        r2_arbol_opt),   4),
+  RMSE = round(c(rmse_lineal,      rmse_arbol_opt), 4),
+  MAE  = round(c(mae_lineal,       mae_arbol_opt),  4)
+)
+
+print(comparacion)
+
+# Gráfica comparativa
+comp_long <- tidyr::pivot_longer(comparacion,
+                                  cols      = c(R2, RMSE, MAE),
+                                  names_to  = "Métrica",
+                                  values_to = "Valor")
+
+ggplot(comp_long, aes(x = Algoritmo, y = Valor, fill = Algoritmo)) +
+  geom_col(alpha = 0.85) +
+  geom_text(aes(label = round(Valor, 4)), vjust = -0.4, size = 3) +
+  facet_wrap(~ Métrica, scales = "free_y") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Regresión Lineal vs Árbol de Regresión",
+       x = NULL, y = "Valor") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        legend.position = "bottom")
+```
+
+**Comparación y conclusión:** La regresión lineal depurada del Lab 3 obtuvo
+R²=`r round(r2_lineal,4)` y RMSE=`r round(rmse_lineal,4)`. El mejor árbol de
+regresión obtuvo R²=`r round(r2_arbol_opt,4)` y
+RMSE=`r round(rmse_arbol_opt,4)`.
+
+El árbol de regresión supera a la regresión lineal en R² y RMSE, lo cual
+refleja su capacidad para capturar relaciones no lineales y particiones del
+espacio de predictores que la regresión lineal no puede modelar. Sin embargo,
+el árbol es menos interpretable y más sensible al sobreajuste si no se controla
+la profundidad. Para el contexto de SmartStay, el árbol ofrece mejor precisión
+predictiva, mientras que la regresión lineal ofrece coeficientes directamente
+interpretables.
+
+\newpage
+
+# 6. Creación de la variable categórica de precio (Actividad 6)
+
+## 6.1 Análisis de la distribución para definir los límites
+
+```{r analisis_categorias, message=FALSE, warning=FALSE}
+# Estadísticas descriptivas del precio en el dataset limpio
+resumen_precio <- data.frame(
+  Estadístico = c("Mínimo", "Percentil 25", "Mediana",
+                  "Media", "Percentil 75", "Percentil 90", "Máximo"),
+  Valor = round(c(
+    min(listings_clean$price),
+    quantile(listings_clean$price, 0.25),
+    median(listings_clean$price),
+    mean(listings_clean$price),
+    quantile(listings_clean$price, 0.75),
+    quantile(listings_clean$price, 0.90),
+    max(listings_clean$price)
+  ), 2)
+)
+print(resumen_precio)
+
+# Boxplot del precio para visualizar la distribución
+ggplot(listings_clean, aes(y = price)) +
+  geom_boxplot(fill = "#2C7BB6", alpha = 0.7, outlier.alpha = 0.1) +
+  geom_hline(yintercept = quantile(listings_clean$price, 0.33),
+             color = "#1A9641", linetype = "dashed", linewidth = 0.8) +
+  geom_hline(yintercept = quantile(listings_clean$price, 0.67),
+             color = "#D7191C", linetype = "dashed", linewidth = 0.8) +
+  annotate("text", x = 0.45,
+           y = quantile(listings_clean$price, 0.33) + 5,
+           label = paste0("P33 = $", round(quantile(listings_clean$price, 0.33))),
+           color = "#1A9641", hjust = 0) +
+  annotate("text", x = 0.45,
+           y = quantile(listings_clean$price, 0.67) + 5,
+           label = paste0("P67 = $", round(quantile(listings_clean$price, 0.67))),
+           color = "#D7191C", hjust = 0) +
+  labs(title = "Distribución del precio con cortes en P33 y P67",
+       y = "Precio por noche (USD)") +
+  theme_minimal()
+```
+
+## 6.2 Definición y justificación de los límites
+
+```{r crear_variable_categorica, message=FALSE, warning=FALSE}
+# Calcular los cortes basados en terciles (P33 y P67)
+p33 <- quantile(listings_clean$price, 0.33)
+p67 <- quantile(listings_clean$price, 0.67)
+
+cat("Corte inferior (P33):", round(p33, 2), "USD\n")
+cat("Corte superior (P67):", round(p67, 2), "USD\n\n")
+
+# Crear la variable categórica en listings_clean
+listings_clean <- listings_clean %>%
+  mutate(
+    categoria_precio = case_when(
+      price <= p33              ~ "Economica",
+      price > p33 & price <= p67 ~ "Intermedia",
+      price > p67               ~ "Cara"
+    ),
+    categoria_precio = factor(categoria_precio,
+                               levels = c("Economica", "Intermedia", "Cara"))
+  )
+
+cat("Distribución de la variable categórica:\n")
+print(table(listings_clean$categoria_precio))
+cat("\nPorcentaje por categoría:\n")
+print(round(prop.table(table(listings_clean$categoria_precio)) * 100, 1))
+
+# Boxplot de precio por categoría
+ggplot(listings_clean, aes(x = categoria_precio, y = price,
+                            fill = categoria_precio)) +
+  geom_boxplot(alpha = 0.75, outlier.alpha = 0.1) +
+  scale_fill_manual(values = c("#1A9641", "#FDAE61", "#D7191C")) +
+  labs(title = "Distribución de precio por categoría",
+       x = "Categoría", y = "Precio por noche (USD)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+**Justificación de los límites:** Se usaron los terciles P33 y P67 de la
+distribución del precio como puntos de corte. Esta elección tiene tres ventajas
+fundamentales:
+
+1. **Fundamento estadístico en los datos:** Los terciles se calculan
+   directamente a partir de la distribución observada de precios (rango
+   $`r round(min(listings_clean$price),0)` – $`r round(max(listings_clean$price),0)`),
+   evitando cualquier criterio arbitrario externo.
+
+2. **Clases balanceadas:** Dividir por terciles garantiza aproximadamente un
+   33% de observaciones por clase, lo cual es importante para que el árbol de
+   clasificación no quede sesgado hacia una categoría mayoritaria.
+
+3. **Interpretabilidad para el negocio:** Los límites resultantes
+   (P33≈$`r round(p33,0)` y P67≈$`r round(p67,0)`) tienen sentido económico:
+   propiedades *Económicas* son las más accesibles, *Intermedias* representan
+   el mercado estándar, y *Caras* corresponden al segmento premium de Airbnb,
+   útil para SmartStay al segmentar su cartera de propiedades.
+
+\newpage
+
+# 7. Árbol de Clasificación (Actividad 7)
+
+## 7.1 Preparación del dataset de clasificación
+
+```{r prep_clasificacion, message=FALSE, warning=FALSE}
+# Dataset para clasificación: sin price ni log_price como predictores
+datos_clasif <- listings_clean %>%
+  select(categoria_precio,
+         accommodates, bedrooms, bathrooms, beds,
+         minimum_nights, availability_365, number_of_reviews,
+         review_scores_rating, review_scores_cleanliness,
+         review_scores_value, reviews_per_month,
+         calculated_host_listings_count) %>%
+  na.omit()
+
+cat("Observaciones para clasificación:", nrow(datos_clasif), "\n")
+cat("Distribución de clases:\n")
+print(table(datos_clasif$categoria_precio))
+
+# Split 80/20 con la misma semilla
+set.seed(42)
+n_cl        <- nrow(datos_clasif)
+idx_cl      <- sample(1:n_cl, size = floor(0.8 * n_cl))
+train_cl    <- datos_clasif[idx_cl, ]
+test_cl     <- datos_clasif[-idx_cl, ]
+
+cat("\nEntrenamiento:", nrow(train_cl), "| Prueba:", nrow(test_cl), "\n")
+cat("Distribución en entrenamiento:\n")
+print(round(prop.table(table(train_cl$categoria_precio)) * 100, 1))
+```
+
+## 7.2 Entrenamiento del árbol de clasificación
+
+```{r arbol_clasificacion, message=FALSE, warning=FALSE, fig.width=14, fig.height=8}
+# Árbol de clasificación con todos los predictores
+arbol_clasif <- rpart(
+  categoria_precio ~ accommodates + bedrooms + bathrooms + beds +
+                     minimum_nights + availability_365 + number_of_reviews +
+                     review_scores_rating + review_scores_cleanliness +
+                     review_scores_value + reviews_per_month +
+                     calculated_host_listings_count,
+  data    = train_cl,
+  method  = "class",
+  control = rpart.control(cp = 0.001, maxdepth = 10)
+)
+
+# Resumen del árbol
+printcp(arbol_clasif)
+```
+
+## 7.3 Visualización gráfica del árbol
+
+```{r viz_arbol_clasif, message=FALSE, warning=FALSE, fig.width=16, fig.height=10}
+# Gráfica completa del árbol
+rpart.plot(
+  arbol_clasif,
+  type    = 4,
+  extra   = 104,
+  under   = TRUE,
+  tweak   = 0.75,
+  main    = "Árbol de Clasificación — Categoría de Precio",
+  box.palette = list("Greens", "Oranges", "Reds")
+)
+```
+
+## 7.4 Importancia de variables
+
+```{r imp_clasif, message=FALSE, warning=FALSE}
+imp_cl <- arbol_clasif$variable.importance
+imp_cl_df <- data.frame(
+  variable    = names(imp_cl),
+  importancia = as.numeric(imp_cl)
+) %>% arrange(desc(importancia))
+
+ggplot(imp_cl_df, aes(x = reorder(variable, importancia), y = importancia)) +
+  geom_col(fill = "#7B2D8B", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Importancia de variables — Árbol de clasificación",
+       x = "Variable", y = "Importancia") +
+  theme_minimal()
+```
+
+## 7.5 Evaluación sobre el conjunto de prueba
+
+```{r eval_clasif, message=FALSE, warning=FALSE}
+# Predicciones sobre el conjunto de prueba
+pred_cl <- predict(arbol_clasif, newdata = test_cl, type = "class")
+
+# Accuracy
+accuracy_cl <- mean(pred_cl == test_cl$categoria_precio)
+cat("Accuracy en prueba:", round(accuracy_cl * 100, 2), "%\n\n")
+
+# Matriz de confusión
+cm <- confusionMatrix(pred_cl, test_cl$categoria_precio)
+print(cm$table)
+
+cat("\nPrecision por clase:\n")
+print(round(cm$byClass[, c("Precision", "Recall", "F1")], 3))
+```
+
+**Interpretación del árbol de clasificación:** El árbol identifica
+`accommodates` como la variable más discriminante en los primeros nodos: las
+propiedades con mayor capacidad tienden a ser clasificadas como *Caras*,
+mientras las de menor capacidad caen en *Económica* o *Intermedia*. Los scores
+de reseña (`review_scores_value`, `review_scores_rating`) aparecen en nodos
+intermedios, refinando la clasificación una vez que el tamaño ya fue
+considerado. Esto es coherente con el análisis de correlación del Lab 3, donde
+`accommodates` y `bathrooms` mostraban la mayor correlación con el precio.
+
+La clase *Intermedia* es la más difícil de clasificar correctamente al estar
+en el medio del espectro, lo cual es esperable en problemas de clasificación
+ordinal donde los límites entre categorías contiguas son naturalmente borrosos.

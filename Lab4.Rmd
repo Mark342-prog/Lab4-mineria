@@ -562,34 +562,88 @@ ggplot(imp_cl_df, aes(x = reorder(variable, importancia), y = importancia)) +
        x = "Variable", y = "Importancia") +
   theme_minimal()
 ```
+**Interpretación del árbol de clasificación:**
+El árbol identifica `accommodates` como la variable más discriminante en los primeros nodos: las propiedades con mayor capacidad tienden a ser clasificadas como *Caras*, mientras las de menor capacidad caen en *Económica* o *Intermedia*. Los scores de reseña (`review_scores_value`, `review_scores_rating`) aparecen en nodos intermedios, refinando la clasificación una vez que el tamaño ya fue considerado. Esto es coherente con el análisis de correlación del Lab 3, donde `accommodates` y `bathrooms` mostraban la mayor correlación con el precio.
 
-## 7.5 Evaluación sobre el conjunto de prueba
+La clase *Intermedia* es la más difícil de clasificar correctamente al estar en el medio del espectro, lo cual es esperable en problemas de clasificación ordinal donde los límites entre categorías contiguas son naturalmente borrosos.
 
+
+
+# 8. Modelo usado en el conjunto de prueba para determinar la eficiencia del algoritmo para clasificar (Actividad 8)
 ```{r eval_clasif, message=FALSE, warning=FALSE}
 # Predicciones sobre el conjunto de prueba
 pred_cl <- predict(arbol_clasif, newdata = test_cl, type = "class")
 
-# Accuracy
+# Accuracy/ eficiencia del algoritmo
 accuracy_cl <- mean(pred_cl == test_cl$categoria_precio)
 cat("Accuracy en prueba:", round(accuracy_cl * 100, 2), "%\n\n")
+cat("\nPrecision por clase:\n")
+print(round(cm$byClass[, c("Precision", "Recall", "F1")], 3))
 
-# Matriz de confusión
+```
+
+**Analisis de la determinación de eficiencia:**
+Al utilizar el modelo sobre el conjunto de prueba para realizar las predicciones, se obtuvo una precisión (accuracy) del 61.3%, lo que indica que el modelo clasifica correctamente aproximadamente 6 de cada 10 propiedades.
+
+Este resultado sugiere que el modelo tiene un desempeño moderado, siendo capaz de identificar patrones generales en los datos, pero aún presenta limitaciones en la correcta clasificación de todas las observaciones.
+
+Esto es esperable dado que el problema incluye tres categorías de precio con fronteras no estrictamente definidas.
+
+
+
+# 9. Análisis de la eficiencia del algoritmo (Actividad 9)
+## 9.1 Matriz de confusión para el árbol de clasificación
+
+```{r}
+
+# Matriz de confusión para el árbol de clasificación
+# Se utiliza la predicción "pred_cl" para tener en cuenta la efectividad
 cm <- confusionMatrix(pred_cl, test_cl$categoria_precio)
 print(cm$table)
 
-cat("\nPrecision por clase:\n")
-print(round(cm$byClass[, c("Precision", "Recall", "F1")], 3))
 ```
 
-**Interpretación del árbol de clasificación:** El árbol identifica
-`accommodates` como la variable más discriminante en los primeros nodos: las
-propiedades con mayor capacidad tienden a ser clasificadas como *Caras*,
-mientras las de menor capacidad caen en *Económica* o *Intermedia*. Los scores
-de reseña (`review_scores_value`, `review_scores_rating`) aparecen en nodos
-intermedios, refinando la clasificación una vez que el tamaño ya fue
-considerado. Esto es coherente con el análisis de correlación del Lab 3, donde
-`accommodates` y `bathrooms` mostraban la mayor correlación con el precio.
 
-La clase *Intermedia* es la más difícil de clasificar correctamente al estar
-en el medio del espectro, lo cual es esperable en problemas de clasificación
-ordinal donde los límites entre categorías contiguas son naturalmente borrosos.
+## 9.2 Análisis de Efectividad del algoritmo y su importancia
+A partir de la matriz de confusión y las métricas por clase, se observa que el modelo tiene un desempeño desigual entre las diferentes categorías de precio.
+
+La clase Económica presenta un buen rendimiento, con una precisión de 0.653 y un recall de 0.734, lo que indica que la mayoría de estas propiedades son correctamente identificadas.
+
+De forma similar, la clase Cara también muestra un desempeño sólido, con precisión de 0.671 y recall de 0.662, reflejando una buena capacidad del modelo para identificar propiedades de alto valor.
+
+Sin embargo, la clase Intermedia presenta el peor desempeño, con una precisión de 0.505 y recall de 0.448. Esto indica que el modelo tiene dificultades para clasificar correctamente esta categoría.
+
+Al analizar la matriz de confusión, se observa que la mayoría de errores ocurren entre las categorías Intermedia y Cara, así como entre Intermedia y Económica, lo cual es coherente dado que esta categoría se encuentra en el punto medio del rango de precios.
+
+Desde el punto de vista del negocio, estos errores son relevantes, ya que una mala clasificación podría afectar la recomendación de propiedades y la estrategia de precios. Sin embargo, el modelo sigue siendo útil para segmentar claramente los extremos del mercado (económico y premium).
+
+
+# 10. Entrenar modelo usando validación cruzada (Actividad 10)
+## 10.1 Validación cruzada
+```{r}
+control <- trainControl(method = "cv", number = 10)
+
+modelo_cv <- train(
+  categoria_precio ~ .,
+  data = train_cl,
+  method = "rpart",
+  trControl = control
+)
+
+
+pred_cv <- predict(modelo_cv, test_cl)
+
+accuracy_cv <- mean(pred_cv == test_cl$categoria_precio)
+accuracy_cv
+cat("Accuracy en prueba:", round(accuracy_cv * 100, 2), "%\n\n")
+```
+
+
+## 10.2 ¿Le fue mejor que al modelo anterior?
+El modelo entrenado con validación cruzada obtuvo una precisión de aproximadamente 57.3%, la cual es ligeramente inferior al modelo anterior sin validación cruzada (61.3%).
+
+Esta diferencia sugiere que el modelo inicial podría estar presentando cierto grado de sobreajuste, logrando un mejor desempeño en el conjunto de prueba pero menor capacidad de generalización.
+
+La validación cruzada permite entrenar el modelo en múltiples subconjuntos de los datos, lo que genera un modelo más robusto y menos dependiente de una partición específica.
+
+Aunque la precisión disminuye ligeramente, el modelo con validación cruzada es más confiable para su uso en escenarios reales, ya que ofrece una mejor estimación del desempeño en datos no vistos.

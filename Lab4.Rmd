@@ -571,15 +571,19 @@ La clase *Intermedia* es la más difícil de clasificar correctamente al estar e
 
 # 8. Modelo usado en el conjunto de prueba para determinar la eficiencia del algoritmo para clasificar (Actividad 8)
 ```{r eval_clasif, message=FALSE, warning=FALSE}
-# Predicciones sobre el conjunto de prueba
+# Predicciones
 pred_cl <- predict(arbol_clasif, newdata = test_cl, type = "class")
 
-# Accuracy/ eficiencia del algoritmo
+# Matriz de confusión (MOVER AQUÍ)
+cm <- confusionMatrix(pred_cl, test_cl$categoria_precio)
+
+# Accuracy
 accuracy_cl <- mean(pred_cl == test_cl$categoria_precio)
 cat("Accuracy en prueba:", round(accuracy_cl * 100, 2), "%\n\n")
+
+# Métricas por clase
 cat("\nPrecision por clase:\n")
 print(round(cm$byClass[, c("Precision", "Recall", "F1")], 3))
-
 ```
 
 **Analisis de la determinación de eficiencia:**
@@ -647,3 +651,115 @@ Esta diferencia sugiere que el modelo inicial podría estar presentando cierto g
 La validación cruzada permite entrenar el modelo en múltiples subconjuntos de los datos, lo que genera un modelo más robusto y menos dependiente de una partición específica.
 
 Aunque la precisión disminuye ligeramente, el modelo con validación cruzada es más confiable para su uso en escenarios reales, ya que ofrece una mejor estimación del desempeño en datos no vistos.
+
+## 11 Haga al menos, 3 modelos más, cambiando la profundidad del árbol. ¿Cuál funcionó mejor?
+
+
+```{r}
+# Modelos con distintas profundidades
+arbol_d3 <- rpart(
+  categoria_precio ~ ., 
+  data = train_cl,
+  method = "class",
+  control = rpart.control(maxdepth = 3, cp = 0)
+)
+
+arbol_d5 <- rpart(
+  categoria_precio ~ ., 
+  data = train_cl,
+  method = "class",
+  control = rpart.control(maxdepth = 5, cp = 0)
+)
+
+arbol_d8 <- rpart(
+  categoria_precio ~ ., 
+  data = train_cl,
+  method = "class",
+  control = rpart.control(maxdepth = 8, cp = 0)
+)
+
+# Predicciones
+pred_d3 <- predict(arbol_d3, test_cl, type = "class")
+pred_d5 <- predict(arbol_d5, test_cl, type = "class")
+pred_d8 <- predict(arbol_d8, test_cl, type = "class")
+
+# Accuracy
+acc_d3 <- mean(pred_d3 == test_cl$categoria_precio)
+acc_d5 <- mean(pred_d5 == test_cl$categoria_precio)
+acc_d8 <- mean(pred_d8 == test_cl$categoria_precio)
+
+cat("Accuracy profundidad 3:", round(acc_d3*100,2), "%\n")
+cat("Accuracy profundidad 5:", round(acc_d5*100,2), "%\n")
+cat("Accuracy profundidad 8:", round(acc_d8*100,2), "%\n")
+```
+Se observa que al incrementar la profundidad del árbol, el accuracy mejora progresivamente. El modelo con profundidad 3 presenta el menor desempeño, lo que indica un caso de subajuste, ya que el modelo es demasiado simple para capturar los patrones de los datos.
+
+Al aumentar la profundidad a 5, el modelo mejora su capacidad predictiva, logrando un mejor equilibrio entre simplicidad y ajuste.
+
+El mejor resultado se obtiene con profundidad 8 (61.36%), lo que indica que un árbol más complejo logra capturar mejor las relaciones entre las variables.
+
+Sin embargo, el incremento en desempeño no es muy grande, lo que sugiere que aumentar aún más la profundidad podría no generar mejoras significativas y podría llevar a sobreajuste.
+
+## 12 Repita los análisis usando random forest como algoritmo de predicción, explique sus resultados comparando ambos algoritmos.
+
+```{r}
+library(randomForest)
+
+# Modelo 1
+rf_100 <- randomForest(
+  categoria_precio ~ ., 
+  data = train_cl,
+  ntree = 100,
+  mtry = 4
+)
+
+# Modelo 2
+rf_200 <- randomForest(
+  categoria_precio ~ ., 
+  data = train_cl,
+  ntree = 200,
+  mtry = 4
+)
+
+# Modelo 3
+rf_m2 <- randomForest(
+  categoria_precio ~ ., 
+  data = train_cl,
+  ntree = 100,
+  mtry = 2
+)
+
+# Predicciones
+pred_rf1 <- predict(rf_100, test_cl)
+pred_rf2 <- predict(rf_200, test_cl)
+pred_rf3 <- predict(rf_m2, test_cl)
+
+# Accuracy
+acc_rf1 <- mean(pred_rf1 == test_cl$categoria_precio)
+acc_rf2 <- mean(pred_rf2 == test_cl$categoria_precio)
+acc_rf3 <- mean(pred_rf3 == test_cl$categoria_precio)
+
+cat("RF (100 árboles):", round(acc_rf1*100,2), "%\n")
+cat("RF (200 árboles):", round(acc_rf2*100,2), "%\n")
+cat("RF (mtry=2):", round(acc_rf3*100,2), "%\n")
+
+comparacion <- data.frame(
+  Modelo = c("Árbol", "RF_100", "RF_200", "RF_mtry2"),
+  Accuracy = c(accuracy_cl, acc_rf1, acc_rf2, acc_rf3)
+)
+
+ggplot(comparacion, aes(x = Modelo, y = Accuracy)) +
+  geom_col(fill = "#4CAF50") +
+  labs(title = "Comparación de modelos",
+       y = "Accuracy") +
+  theme_minimal()
+```
+
+El modelo Random Forest muestra un desempeño superior al árbol de decisión individual, alcanzando un accuracy cercano al 66–67%, lo que representa una mejora aproximada de 5 puntos porcentuales.
+
+Al comparar los distintos modelos:
+
+Aumentar el número de árboles de 100 a 200 genera una leve mejora, lo que indica mayor estabilidad del modelo.
+Cambiar el parámetro mtry a 2 no mejora el desempeño, lo que sugiere que usar más variables en cada división permite capturar mejor la información.
+
+En general, las diferencias entre configuraciones son pequeñas, lo que confirma que Random Forest es un modelo robusto y estable
